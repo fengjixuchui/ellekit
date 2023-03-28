@@ -41,16 +41,17 @@ func findBundleID(path: String) -> String? {
     return nil
 }
 
+@inline(never)
 func spawn_replacement(
     _ p: Bool,
     _ pid: UnsafeMutablePointer<pid_t>,
     _ path: UnsafePointer<CChar>,
-    _ file_actions: UnsafePointer<posix_spawn_file_actions_t?>,
+    _ file_actions: UnsafePointer<posix_spawn_file_actions_t?>?,
     _ spawnattr: UnsafePointer<posix_spawnattr_t?>?,
     _ argv: UnsafePointer<UnsafeMutablePointer<CChar>?>?,
     _ envp: UnsafePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32 {
-        
+            
     let path = String(cString: path)
     
     tprint("executing \(path)")
@@ -66,26 +67,27 @@ func spawn_replacement(
     let blacklisted = [
         "BlastDoor",
         "mobile_assertion_agent",
-        "WebKit",
-        "Safari"
+        "watchdog",
+        "webkit",
+        "jailbreakd"
     ]
     .map { path.contains($0) }
     .contains(true)
     
-    
     // check if we're spawning springboard
     // usually launchd spawns springboard directly, without going through xpcproxy
     // since we cache tweaks, a respring will forcefully refresh it
-    // we also spawn safe mode after
+    // we also *not anymore* spawn safe mode after
     let springboard = path == "/System/Library/CoreServices/SpringBoard.app/SpringBoard"
     let safeMode = FileManager.default.fileExists(atPath: "/var/mobile/.eksafemode")
     
     func addDYLDEnv(_ envKey: String) {
-        if let firstEnvIndex {
+        if let firstEnvIndex, envKey != envp[firstEnvIndex] {
             let previousEnvKey = envp[firstEnvIndex].dropFirst("DYLD_INSERT_LIBRARIES=".count) // gives us the path
             envp[firstEnvIndex] = "DYLD_INSERT_LIBRARIES="+envKey + ":" + previousEnvKey
+        } else {
+            envp.append("DYLD_INSERT_LIBRARIES="+envKey)
         }
-        envp.append("DYLD_INSERT_LIBRARIES="+envKey)
     }
     
     if springboard {
@@ -95,11 +97,19 @@ func spawn_replacement(
     
     if launchd {
         
+        // Inject pspawn.dylib in launchd and xpcproxy
         tprint("launchd \(path)")
         addDYLDEnv(selfPath)
         
     } else if safeMode {
-        // do nothing
+                
+        // We always inject the SpringBoard MobileSafety.dylib, I believe it is safe
+        // If it isn't SpringBoard, skip ahead
+        if springboard {
+            tprint("Injecting sb hook \(sbHookPath)")
+            addDYLDEnv(sbHookPath)
+        }
+        
     } else if !blacklisted {
         
         tprint("injecting tweaks \(path)")
@@ -112,10 +122,11 @@ func spawn_replacement(
             
             var injectedBundles = [String]()
             
-            injectedBundles.insert(contentsOf: ["com.apple.uikit", "com.apple.foundation", "com.apple.security"], at: 0) // my macho parser isn't that good yet!
+            // my macho parser isn't that good yet!
+            injectedBundles.insert(contentsOf: ["com.apple.uikit", "com.apple.foundation", "com.apple.security"], at: 0)
             
             tprint("loaded bundles", injectedBundles)
-            
+                        
             if !safeMode {
                 dylibs = tweaks
                     .compactMap {
@@ -142,10 +153,13 @@ func spawn_replacement(
         } else {
             let executableName = (path as NSString).lastPathComponent
             tprint("using exec name \(path) \(executableName)")
+            
             let tweaks = tweaks
                 .filter { $0.executables.contains(executableName.lowercased()) }
                 .map(\.path)
+            
             tprint("got tweaks \(executableName) \(tweaks)")
+            
             if !tweaks.isEmpty {
                 let env = tweaks.joined(separator: ":")
                 tprint("adding env \(env)")
@@ -157,9 +171,22 @@ func spawn_replacement(
         tprint("no tweaks \(path)")
     }
     
+    let file_extension = sandbox_extension_issue_file(
+        APP_SANDBOX_READ,
+        ("/var/jb" as NSString).resolvingSymlinksInPath,
+        0
+    )
+        
+    if let exten = file_extension {
+        tprint("got extension", String(cString: exten))
+        envp.append("SANDBOX_EXTENSION="+String(cString: exten))
+    }
+    
     tprint("----------\n new env is \n\(envp.joined(separator: "\n"))\n----------")
     
-    var envp_c: [UnsafeMutablePointer<CChar>?] = envp.compactMap { ($0 as NSString).utf8String }.map { strdup($0) }
+    var envp_c: [UnsafeMutablePointer<CChar>?] = envp
+        .compactMap { ($0 as NSString).utf8String }
+        .map { strdup($0) }
     
     envp_c.append(nil)
             
@@ -183,7 +210,6 @@ func spawn_replacement(
         }
     }
     #endif
-
     
     let ret = envp_c.withUnsafeBufferPointer { buf in
         if Rebinds.shared.usedFishhook {
@@ -210,5 +236,11 @@ func spawn_replacement(
         }
     }
     
+    #if os(iOS)
+    if springboard && ret != 0 {
+        FileManager.default.createFile(atPath: "/var/mobile/.eksafemode", contents: Data())
+    }
+    #endif
+        
     return ret
 }

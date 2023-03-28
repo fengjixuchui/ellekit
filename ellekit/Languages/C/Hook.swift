@@ -44,7 +44,7 @@ public func hook(_ stockTarget: UnsafeMutableRawPointer, _ stockReplacement: Uns
     var code = [UInt8]()
 
     // fast big branch option
-    if targetSize >= 5 && abs(branchOffset / 1024 / 1024) > 128 {
+    if targetSize > 5 && abs(branchOffset / 1024 / 1024) > 128 {
          print("[*] Big branch")
 
          let target_addr = UInt64(UInt(bitPattern: replacement))
@@ -69,7 +69,8 @@ public func hook(_ stockTarget: UnsafeMutableRawPointer, _ stockReplacement: Uns
     let orig = getOriginal(
         target,
         targetSize,
-        usedBigBranch: abs(branchOffset / 1024 / 1024) > 128 && targetSize >= 5
+        usedBigBranch: abs(branchOffset / 1024 / 1024) > 128 && targetSize > 5,
+        shouldBranchAfter: targetSize != 5
     )
 
     let ret = code.withUnsafeBufferPointer { buf in
@@ -103,7 +104,7 @@ public func hook(_ originalTarget: UnsafeMutableRawPointer, _ originalReplacemen
 
     var code = [UInt8]()
 
-    if targetSize >= 5 && abs(branchOffset / 1024 / 1024) > 128 {
+    if targetSize > 5 && abs(branchOffset / 1024 / 1024) > 128 {
         print("[*] Big branch")
 
         let target_addr = UInt64(UInt(bitPattern: replacement))
@@ -139,16 +140,20 @@ public func hook(_ originalTarget: UnsafeMutableRawPointer, _ originalReplacemen
     }
 }
 
-@discardableResult
+@discardableResult @_optimize(speed)
 func rawHook(address: UnsafeMutableRawPointer, code: UnsafePointer<UInt8>?, size: mach_vm_size_t) -> Int {
     let enforceThreadSafety = enforceThreadSafety
     if enforceThreadSafety {
         stopAllThreads()
     }
-    let krt1 = mach_vm_protect(
+    
+    let goodSize = Int(size)
+    let machAddr = mach_vm_address_t(UInt(bitPattern: address))
+    
+    let krt1 = custom_mach_vm_protect(
         mach_task_self_,
-        mach_vm_address_t(UInt(bitPattern: address)),
-        mach_vm_size_t(size),
+        machAddr,
+        0x4000,
         0,
         VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY
     )
@@ -157,12 +162,12 @@ func rawHook(address: UnsafeMutableRawPointer, code: UnsafePointer<UInt8>?, size
         return Int(krt1)
     }
 
-    memcpy(address, code, Int(size))
-    
-    let err2 = mach_vm_protect(
+    manual_memcpy(address, code, goodSize)
+        
+    let err2 = custom_mach_vm_protect(
         mach_task_self_,
-        mach_vm_address_t(UInt(bitPattern: address)),
-        mach_vm_size_t(size),
+        machAddr,
+        0x4000,
         0,
         VM_PROT_READ | VM_PROT_EXECUTE
     )
@@ -170,7 +175,7 @@ func rawHook(address: UnsafeMutableRawPointer, code: UnsafePointer<UInt8>?, size
     // flush page cache so we don't hit cached unpatched functions
     sys_icache_invalidate(address, Int(vm_page_size))
 
-    guard err2 == 0 else { return Int(err2) }
+    guard err2 == KERN_SUCCESS else { return Int(err2) }
     if enforceThreadSafety {
         resumeAllThreads()
     }

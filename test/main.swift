@@ -8,6 +8,166 @@
 
 import Foundation
 import ellekit
+import AppKit
+
+for image in 0..<_dyld_image_count() {
+    print(String(cString: _dyld_get_image_name(image)))
+    if let sym = MSFindSymbol(_dyld_get_image_header(image), "_NSDrawMenuBarBackground") {
+        print("_NSDrawMenuBarBackground: \(sym)")
+        break
+    }
+}
+
+#if false
+
+func demangle(symbol: UnsafePointer<Int8>) -> String? {
+    if let demangledNamePtr = _stdlib_demangleImpl(
+        symbol, mangledNameLength: UInt(strlen(symbol)),
+        outputBuffer: nil, outputBufferSize: nil, flags: 0) {
+        let demangledName = String(cString: demangledNamePtr)
+        free(demangledNamePtr)
+        return demangledName
+    }
+    return nil
+}
+
+// Taken from stdlib, not public Swift3+
+@_silgen_name("swift_demangle")
+private
+func _stdlib_demangleImpl(
+_ mangledName: UnsafePointer<CChar>?,
+mangledNameLength: UInt,
+outputBuffer: UnsafeMutablePointer<UInt8>?,
+outputBufferSize: UnsafeMutablePointer<UInt>?,
+flags: UInt32
+) -> UnsafeMutablePointer<CChar>?
+
+public typealias OneThinClosure<S, C1> = @convention(thin) (C1) -> S
+
+@discardableResult
+public func withUnsafeFunctionPointer<S, C1, R>(
+    _ closure: OneThinClosure<S, C1>,
+    _ block: (UnsafeRawPointer) -> R
+) -> R  {
+    block(getAbsolutePointer(unsafeBitCast(closure, to: UnsafeRawPointer.self)))
+}
+
+public typealias TwoThinClosure<S, C1, C2> = @convention(thin) (C1, C2) -> S
+
+@discardableResult
+public func withUnsafeFunctionPointer<S, C1, C2, R>(
+    _ closure: TwoThinClosure<S, C1, C2>,
+    _ block: (UnsafeRawPointer) -> R
+) -> R  {
+    block(getAbsolutePointer(unsafeBitCast(closure, to: UnsafeRawPointer.self)))
+}
+
+public typealias ThreeThinClosure<S, C1, C2, C3> = @convention(thin) (C1, C2, C3) -> S
+
+@discardableResult
+public func withUnsafeFunctionPointer<S, C1, C2, C3, R>(
+    _ closure: ThreeThinClosure<S, C1, C2, C3>,
+    _ block: (UnsafeRawPointer) -> R
+) -> R  {
+    block(getAbsolutePointer(unsafeBitCast(closure, to: UnsafeRawPointer.self)))
+}
+
+public func getAbsolutePointer(_ ptr: UnsafeRawPointer) -> UnsafeRawPointer {
+    return ptr
+}
+
+withUnsafeFunctionPointer(atoi) { ptr in
+    ptr.hexDump(128)
+    
+    print(String(format: "%02X", ptr.advanced(by: 20).assumingMemoryBound(to: UInt32.self).pointee.reverse()))
+
+    let imm = disassembleBranchImm(.init(ptr.advanced(by: 20).assumingMemoryBound(to: UInt32.self).pointee.reverse()))
+    let ptr = ptr.advanced(by: 20).advanced(by: imm)
+        
+    print(ptr, imm)
+        
+    ptr.hexDump(128)
+    
+    var info = Dl_info()
+    dladdr(ptr, &info)
+    print(String(cString: info.dli_sname))
+    print(
+        demangle(symbol: info.dli_sname)
+    )
+}
+
+//withUnsafeFunctionPointer(String.lowercased) {
+//    $0.hexDump(128)
+//    var info = Dl_info()
+//    dladdr($0, &info)
+//    print(String(cString: info.dli_sname))
+//    print(
+//        demangle(symbol: info.dli_sname)
+//    )
+//}
+
+exit(0)
+
+
+EKEnableThreadSafety(1)
+
+let atoiptr = dlsym(dlopen(nil, RTLD_NOW), "atoi")!
+
+@_cdecl("rep")
+public func rep() -> Int {
+    2
+}
+
+let repcl: @convention(c) () -> Int = rep
+
+let repptr = unsafeBitCast(repcl, to: UnsafeMutableRawPointer.self)
+
+DispatchQueue.global().async {
+    while true {
+        let two = atoi("3")
+        if two == 2 {
+            break
+        }
+    }
+    print("hooked fine")
+}
+
+let test: UnsafeMutableRawPointer? = hook(atoiptr, repptr)!
+
+let origRes = unsafeBitCast(test, to: (@convention (c) (UnsafePointer<CChar>) -> Int).self)("4")
+
+print(
+    atoi("3"),
+    origRes
+)
+
+func test() -> Int {
+    print("a")
+    return 2
+}
+
+struct FunctionLayout {
+    var ptr1: UnsafeRawPointer
+    var ptr2: UnsafeRawPointer
+}
+
+extension FixedWidthInteger {
+    func reverse() -> Self {
+        ((self>>24)&0xff) | ((self<<8)&0xff0000) | ((self>>8)&0xff00) | ((self<<24)&0xff000000)
+    }
+}
+
+// CF tests
+let image = try ellekit.openImage(image: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation")!
+calculateTime {
+    print(
+        try! ellekit.findPrivateSymbol(
+            image: image,
+            symbol: "-[CFPrefsDaemon handleSourceMessage:replyHandler:]",
+            overrideCachePath: "/Users/charlotte/Downloads/iPhone7-10.0-14A93012r/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64"
+        )! // private sym
+    )
+}
 
 func calculateTime(block : (() -> Void)) {
         let start = DispatchTime.now()
@@ -28,11 +188,56 @@ calculateTime {
     }
 }
 
+print("--------- Finding DhinakG's symbol -----------")
+
+dlopen("/System/Library/PrivateFrameworks/DeviceIdentity.framework/Versions/A/DeviceIdentity", RTLD_NOW)
+let devID = try ellekit.openImage(image: "/System/Library/PrivateFrameworks/DeviceIdentity.framework/Versions/A/DeviceIdentity")!
+calculateTime {
+    print(try? ellekit.findPrivateSymbol(
+        image: devID,
+        symbol: "_isSupportedDeviceIdentityClient",
+        overrideCachePath: "/Users/charlotte/Downloads/iPhone15,3_16.2_20C65_Restore/dyld_shared_cache_arm64e.symbols"
+    )!) // private sym
+}
+
 print("--------- Finding objc_direct symbol ---------")
 // CF tests
 let image = try ellekit.openImage(image: "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation")!
-let symbol = try ellekit.findSymbol(image: image, symbol: "-[CFPrefsDaemon handleSourceMessage:replyHandler:]")! // private sym
+calculateTime {
+    print(
+        try! ellekit.findPrivateSymbol(
+            image: image,
+            symbol: "-[CFPrefsDaemon handleSourceMessage:replyHandler:]",
+            overrideCachePath: "/Users/charlotte/Downloads/iPhone15,3_16.2_20C65_Restore/dyld_shared_cache_arm64e.symbols"
+        )! // private sym
+    )
+}
+
+let symbol = try ellekit.findSymbol(
+    image: image,
+    symbol: "-[CFPrefsDaemon handleSourceMessage:replyHandler:]"
+)! // private sym
 print("Symbol found:", symbol)
+
+print("--------- Finding Capt's symbol ---------")
+for image in 0..<_dyld_image_count() {
+    [
+        "_CFAttributedStringGetAttribute",
+        "_CFUUIDCreate",
+        "_CGFontCopyVariations",
+        "_CGImageCreateWithPNGDataProvider",
+        "_FPFileMetadataCopyTagData",
+        "_BKSDisplayBrightnessSetAutoBrightnessEnabled",
+        "_BKSDisplayBrightnessGetCurrent",
+        "_UISUserInterfaceStyleModeValuelsAutomatic",
+        "_MGGetBoolAnswer"
+    ].forEach {
+        if let sym = try? ellekit.findSymbol(image: _dyld_get_image_header(image), symbol: $0) {
+            print("\($0): \(sym)")
+            let _:Void = hook(UnsafeMutableRawPointer(mutating: sym), dlsym(dlopen(nil, RTLD_NOW), "MSHookFunction"))
+        }
+    }
+}
 
 print("--------- Finding posix_spawn and memcpy symbols ---------")
 // libkernel tests
@@ -209,4 +414,5 @@ let orig: UnsafeMutableRawPointer? = hook(dlsym(dlopen(nil, RTLD_NOW), "free"), 
 
 free_orig = unsafeBitCast(orig, to: freebody?.self)
 
+#endif
 #endif

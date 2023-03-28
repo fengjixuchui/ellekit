@@ -230,25 +230,17 @@ class adrp: Instruction {
 
     public init(_ rt: Register, _ label: Int = 0) {
         var base = Self.base
-        let immlow = label / 4096
-        let immhigh = label >> 2 & 0x7ffff
+        let immlow = (label / 4096)
+        let immhigh = (label >> 2)
         base |= immlow << 29
         base |= immhigh << 5
         base |= rt.value
         self.value = reverse(base)
     }
 
-    public convenience init?(isn: UInt32, formerPC: UInt64, newPC: UInt64) {
-        guard let target = Self.destination(isn, formerPC) else {
-            return nil
-        }
-        let rt = isn.bits(0...4)
-        self.init(.x(Int(rt)), Int(target - newPC))
-    }
-
     static let base = 0b1_00_10000_0000000000000000000_00000
 
-    static private func destination(_ instruction: UInt32, _ pc: UInt64) -> UInt64? {
+    static func destination(_ instruction: UInt32, _ pc: UInt64) -> UInt64? {
         // Calculate imm from hi and lo
         var imm_hi_lo = (instruction & 0xFFFFE0) >> 3
         imm_hi_lo |= (instruction & 0x60000000) >> 29
@@ -259,25 +251,40 @@ class adrp: Instruction {
 
         // Build real imm
         let imm = (imm_hi_lo << 12)
-
+        
         // Emulate
-        return (pc & 0xFFFFFFFFFFFFF000) + UInt64(imm)
+        return (pc & ~0xFFF) &+ UInt64(imm)
     }
 
 }
 
-class adr: Instruction {
+public class adr: Instruction {
     required public init(encoded: Int) {
         self.value = encoded
+        self.register = Register.x(encoded.reverse().bits(0...4))
+        self.label = Int(Self.destination(UInt32(encoded.reverse()), 0))
     }
 
     public func bytes() -> [UInt8] {
         byteArray(from: value)
     }
 
-    let value: Int
+    public var _cyanideTarget: Int? = nil
+    
+    public init(_ rt: Register, data: Int = 0) {
+        self.register = rt
+        self._cyanideTarget = data
+        self.label = 0
+        self.value = -1
+    }
+    
+    public let value: Int
+    public let register: Register
+    public let label: Int
 
     public init(_ rt: Register, _ label: Int = 0) {
+        self.register = rt
+        self.label = label
         var base = Self.base
         let immlow = label & 0x3
         let immhigh = label >> 2 & 0x7ffff
@@ -303,7 +310,7 @@ class adr: Instruction {
             // Sign extend
             imm |= 0xFFE00000
         }
-
+        
         return pc + UInt64(imm)
     }
 }

@@ -2,8 +2,12 @@
 // This file is licensed under the BSD-3 Clause License
 // Copyright 2022 © Charlotte Belanger
 
+import Foundation
+import os.log
+
 var selfPath: String = "/usr/lib/system/libdyld.dylib"
 var sbHookPath: String = "/usr/lib/system/libdyld.dylib"
+var injectorPath: String = "/usr/lib/system/libdyld.dylib"
 
 func loadPath() {
     if let path = loadDLaddrPath() {
@@ -20,6 +24,7 @@ func loadPath() {
         #endif
     }
     sbHookPath = selfPath.components(separatedBy: "/").dropLast().joined(separator: "/").appending("/MobileSafety.dylib")
+    injectorPath = selfPath.components(separatedBy: "/").dropLast().joined(separator: "/").appending("/libinjector.dylib")
 }
 
 func loadDLaddrPath() -> String? {
@@ -33,16 +38,19 @@ func loadDLaddrPath() -> String? {
     return str
 }
 
-import Foundation
-import os.log
+let insideLaunchd = ProcessInfo.processInfo.processName.contains("launchd")
 
 @_cdecl("launchd_entry")
 public func entry() {
+    tprint("Hello world from", ProcessInfo.processInfo.processName, "running as", getuid())
+    
     loadPath()
+    
     do {
         try loadTweaks()
     } catch {
         tprint("\(error)")
     }
+    
     Rebinds.shared.performHooks()
 }
